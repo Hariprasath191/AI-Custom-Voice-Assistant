@@ -1,18 +1,31 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""   # Force CPU
+
+import torch
+torch.set_num_threads(1)
+
 from flask import Flask, render_template, request, jsonify
 from TTS.api import TTS
-import os, uuid, subprocess
+import uuid, subprocess
 
 app = Flask(__name__)
 
 AUDIO_DIR = "static/audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
-# Load model ONCE
-tts = TTS(
-    model_name="tts_models/en/ljspeech/tacotron2-DDC",
-    gpu=False,
-    progress_bar=False
-)
+# --------- LAZY LOAD TTS (CRITICAL FIX) ---------
+tts = None
+
+def get_tts():
+    global tts
+    if tts is None:
+        tts = TTS(
+            model_name="tts_models/en/ljspeech/tacotron2-DDC",
+            gpu=False,
+            progress_bar=False
+        )
+    return tts
+# -----------------------------------------------
 
 TONE_PRESETS = {
     "neutral": 1.0,
@@ -47,27 +60,34 @@ def generate():
     pitched_path = os.path.join(AUDIO_DIR, pitched_wav)
     mp3_path = os.path.join(AUDIO_DIR, mp3_name)
 
-    # Generate base speech
-    tts.tts_to_file(
+    # 🔥 Load model ONLY when needed
+    tts_engine = get_tts()
+
+    # Generate speech
+    tts_engine.tts_to_file(
         text=text,
         file_path=wav_path,
         length_scale=length_scale
     )
 
-    # Pitch control using FFmpeg
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-i", wav_path,
-        "-filter:a", f"asetrate=44100*{pitch},atempo={1/pitch}",
-        pitched_path
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Pitch control (FFmpeg)
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", wav_path,
+            "-filter:a", f"asetrate=44100*{pitch},atempo={1/pitch}",
+            pitched_path
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
     # Convert to MP3
-    subprocess.run([
-        "ffmpeg", "-y",
-        "-i", pitched_path,
-        mp3_path
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", pitched_path, mp3_path],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
     os.remove(wav_path)
     os.remove(pitched_path)
